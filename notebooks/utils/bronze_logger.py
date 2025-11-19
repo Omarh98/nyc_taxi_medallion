@@ -1,5 +1,5 @@
 from pyspark.sql.functions import current_timestamp
-from pyspark.sql.types import StructType, StructField, StringType, IntegerType, TimestampType,LongType
+from pyspark.sql.types import StructType, StructField, StringType, IntegerType, TimestampType
 
 def log_bronze_ingestion(spark,run_id,dataset_name,catalog_table,log_table,success=True,error_msg=""):
     """
@@ -7,7 +7,7 @@ def log_bronze_ingestion(spark,run_id,dataset_name,catalog_table,log_table,succe
     """
     if success:
         #get row count for the specific run
-        ingested_rows=spark.table(catalog_table).filter(f"run_id='{run_id}'").count().cast("long")
+        ingested_rows=spark.table(catalog_table).filter(f"run_id='{run_id}'").count()
         status_msg="Success"
     else:
         ingested_rows=0
@@ -18,7 +18,7 @@ def log_bronze_ingestion(spark,run_id,dataset_name,catalog_table,log_table,succe
     StructField("dataset_name", StringType(), nullable=False),
     StructField("catalog_table", StringType(), nullable=False),
     StructField("status", StringType(), nullable=False),
-    StructField("ingested_rows", LongType(), nullable=True),
+    StructField("ingested_rows", IntegerType(), nullable=True),
     StructField("error_msg", StringType(), nullable=True)
 ])
     log_entry=spark.createDataFrame(
