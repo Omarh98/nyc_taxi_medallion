@@ -1,0 +1,67 @@
+Yellow Taxi Trips:
+    1.Vendor Id not null and integer type
+    2.6>passenger_count>0 and not null
+    3.trip_distance>0 and not null
+    4.RateCodeId!=null if payment_type!=0 and 1 through 6 + 99
+    5.store and fwd flag!=null if payment_type!=0,values=Y,N
+    6.PULocationId and DropOff LocationId != null and integer type, PU or DO = JFK when rate code =2 PU or DO=Newark when rate code =3
+    7.pickup_datetime should be less than dropoff_datetime
+    8.payment_type!= null and integer type
+    9.fare_amount !=null and fare_amount>3 when RateCodeId=1,
+    fare_amount>= 52 when RateCodeId=2,fare_amount>20 when RateCodeId=3
+    extra>=0 and !=null
+    10.mta_tax=0 or 0.5 and != null (DO not ouside nyc)
+    11.tip_amount>0 when payment_type=1 else 0
+    12.tolls_amount>=0 and != null
+    13.total_amount must be approx equal to sum of all fares and charges and !=null
+    14.improvement_surcharge>=0.3 and !=null (always levied)
+    15.congestion_surcharge=2.5 or 0 and != null (only for PU and DO in manhattan zone)
+    16.airport fee = 0 or 1.75 (if pickup id is JFK or newark) and != null
+
+Green Taxi Trips:
+    1.Vendor Id not null and integer type
+    2.6>passenger_count>0 and not null
+    3.trip_distance>0 and not null
+    4.RateCodeId!=null if payment_type!=0 and 1 through 6 + 99
+    5.store and fwd flag!=null if payment_type!=0,values=Y,N
+    6.PULocationId and DropOff LocationId != null and integer type,
+    PU or DO = JFK when rate code =2 PU or DO=Newark when rate code =3
+    7.pickup_datetime should be less than dropoff_datetime
+    8.trip_type!= null and integer type
+    9.fare_amount !=null and fare_amount>3 when RateCodeId=1,
+    fare_amount>= 52 when RateCodeId=2,fare_amount>20 when RateCodeId=3
+    extra>=0 and !=null
+    10.mta_tax=0 or 0.5 and != null (DO not ouside nyc)
+    11.tip_amount>0 when payment_type=1 else 0
+    12.tolls_amount>=0 and != null
+    13.total_amount must be approx equal to sum of all fares and charges and !=null
+    14.improvement_surcharge>=0.3 and !=null (always levied)
+    15.congestion_surcharge=2.5 or 0 and != null (only for PU and DO in manhattan zone)
+
+
+FHV Trips:
+    1. PU and DO locations not null
+    2. no blanks in affiliated or dispatched and not null
+    3. pickup time < dropoff time
+
+HVFHV Trips:
+    1.  license_num is not null
+    2. dispatching_base_num,originating not null
+    3.  request<onscene<pickup<dropoff
+    4. onscene not null for WA flag=Y, rest not null at all
+    5. PU and DO id not null
+    6. trip_miles >0 and not null
+    7. trip_time>0 matches pickup-dropoff difference and not null
+    8. base fare >0 and not null
+    9. tolls >=0 and not null
+    10. bcf >=0 and not null
+    11. sales_tax>0 and not null
+    12. congestion_surcharge 0 or 2.5 and not null
+    13. tips>=0 and not null
+    14. driver_pay > 0 and not null
+    15. flags = Y or N
+
+
+Standardization of columns:
+
+
