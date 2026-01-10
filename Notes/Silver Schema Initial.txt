@@ -1,0 +1,98 @@
+yellow taxi trips:
+ year int
+ month int
+ vendor_id int
+ pickup_datetime timestamp_ntz
+ dropoff_datetime timestamp_ntz
+ trip_distance double 
+ trip_duration int (do-pu in seconds)
+ rate_code int
+ pickup_location_id int
+ dropoff_location_id int
+ payment_type_id int
+ fare_amount double
+ extra_charge double
+ mta_tax double
+ tip_amount double
+ tolls_amount double
+ improvement_surcharge double
+ congestion_surcharge 
+ double
+ cbd_congestion_fee double
+ airport_fee double
+ total_amount double
+ driver_pay double (fare+tips)
+ store_and_fwd_flag boolean
+ 
+ green taxi trips:
+ year int
+ month int
+ vendor_id int
+ pickup_datetime timestamp_ntz
+ dropoff_datetime timestamp_ntz
+ trip_distance double 
+ trip_duration int (do-pu in seconds)
+ rate_code int
+ pickup_location_id int
+ dropoff_location_id int
+ payment_type_id int
+ fare_amount double
+ extra_charge double
+ mta_tax double
+ tip_amount double
+ tolls_amount double
+ improvement_surcharge double
+ congestion_surcharge 
+ double
+ cbd_congestion_fee double
+ airport_fee double
+ total_amount double
+ driver_pay double (fare+tips)
+
+ trip_type int
+ ehail_fee double
+ store_and_fwd_flag boolean
+
+
+ hvfhv:
+ license_number string
+ dispatching_base_num string
+ originating_base_num string
+ request_datetime timestamp_ntz
+ on_scene_datetime timestamp_ntz
+ pickup_datetime timestamp_ntz
+ dropoff_datetime timestamp_ntz
+ pickup_location_id int
+ dropoff_location_id int
+ trip_distance double (miles)
+ trip_duration int (time)
+ fare_amount double (base_passenger_fare)
+ tolls_amount double
+ bcf_amount double
+ sales_tax double
+ congestion_surcharge double
+ airport_fee double
+ cbd_congestion_fee double
+ total_amount double (fees+fare)
+ shared_request_flag boolean
+ shared_match_flag boolean
+ access_a_ride_flag boolean
+ wav_request_flag
+
+fhv:
+year int
+month int
+dispatching_base_num string
+affiliated_base_num string
+pickup_datetime timestamp_ntz
+dropoff_datetime timestamp_ntz
+pickup_location_id int
+dropoff_location_id int
+shared_ride_flag boolean
+
+
+
+
+
+
+
