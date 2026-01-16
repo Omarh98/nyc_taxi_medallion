@@ -29,7 +29,7 @@ def log_bronze_ingestion(spark,run_id,dataset_name,catalog_table,log_table,succe
 
 
 def log_silver_ingestion(spark,run_id,dataset_name,catalog_table,log_table,start_ts,end_ts,
-                         max_bronze_ts,bronze_count,silver_count,quarantine_count,success=True,error_msg=""):
+                         max_bronze_ts,bronze_count,silver_count,quarantine_count,duplicates_dropped,success=True,error_msg=""):
     """
     Logging function: records ingested rows or failure for a run.
     """
@@ -50,6 +50,7 @@ def log_silver_ingestion(spark,run_id,dataset_name,catalog_table,log_table,start
         StructField("bronze_count", IntegerType(), True),
         StructField("silver_count", IntegerType(), True),
         StructField("quarantine_count", IntegerType(), True),
+        StructField("duplicates_dropped", IntegerType(), True),
         StructField("error_msg", StringType(), True)
     ])
 
@@ -64,6 +65,7 @@ def log_silver_ingestion(spark,run_id,dataset_name,catalog_table,log_table,start
         bronze_count,       # Matches Column 9
         silver_count,       # Matches Column 10
         quarantine_count,   # Matches Column 11
+        duplicates_dropped,
         error_msg
     )]
     log_entry=spark.createDataFrame( data, schema=log_schema)
