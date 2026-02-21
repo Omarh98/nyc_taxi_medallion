@@ -205,45 +205,21 @@ def apply_scd(spark, staged_df, target_table, business_key, comparison_cols, scd
 
     # --- 1. PREPARE SOURCE DATA ---
     # We add the Silver-specific metadata here so it's ready for the merge/insert
-    # Note: bronze_id is assumed to be in source_df already
 
-    
     # Identify all data columns (excluding the keys and SCD2 tracking cols if they exist in source)
     # We use the source columns as the "Master List" of what to insert/update
     # We filter out columns that shouldn't be in the update set (like the business key itself)
     source_cols = staged_df.columns
     update_columns = [c for c in source_cols if c != business_key]
     
-    # --- 2. INITIAL LOAD HANDLER ---
-    if not spark.catalog.tableExists(target_table):
-        print(f"Target {target_table} does not exist. Performing initial load...")
-        initial_df = staged_df
-        
-        if scd_type == 2:
-            initial_df = initial_df.withColumn("start_at", F.current_timestamp()) \
-                                   .withColumn("end_at", F.lit(None).cast("timestamp")) \
-                                   .withColumn("is_current", F.lit(True))
-        
-        initial_df.write.format("delta").saveAsTable(target_table)
-        
-        # Get metrics from the commit we just made
-        dt = DeltaTable.forName(spark, target_table)
-        metrics = dt.history(1).collect()[0]["operationMetrics"]
-        rows_inserted = int(metrics.get("numOutputRows", initial_df.count()))
-        
-        return {
-            "rows_inserted": rows_inserted, 
-            "rows_updated": 0, 
-            "total_rows_affected": rows_inserted
-        }
 
     target_delta = DeltaTable.forName(spark, target_table)
 
-    # --- 3. DEFINE MATCH LOGIC ---
+    # --- 2. DEFINE MATCH LOGIC ---
     # Null-safe comparison (<=>) prevents NULLs from breaking the logic
     change_condition = " OR ".join([f"target.{c} <=> source.{c} = False" for c in comparison_cols])
     
-    # --- 4. EXECUTE MERGE ---
+    # --- 3. EXECUTE MERGE ---
     if scd_type == 1:
         # SCD Type 1: Overwrite on change, Ignore on no change
         (target_delta.alias("target")
@@ -304,7 +280,7 @@ def apply_scd(spark, staged_df, target_table, business_key, comparison_cols, scd
             .execute()
         )
 
-    # --- 5. EXTRACT METRICS ---
+    # --- 4. EXTRACT METRICS ---
     history = target_delta.history(1).collect()[0]
     metrics = history["operationMetrics"]
     

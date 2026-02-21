@@ -33,7 +33,7 @@ def ingest_bronze(spark, run_id, landing_path, bronze_path, schema_path, checkpo
         None: Executes the stream to completion and registers the table in the catalog.
     """
 
-    # 1️ Read files with Autoloader and add metadata columns
+    # 1️. Read files with Autoloader and add metadata columns
     df = (
         spark.readStream.format("cloudFiles")
         .option("cloudFiles.format", "parquet")
@@ -42,12 +42,12 @@ def ingest_bronze(spark, run_id, landing_path, bronze_path, schema_path, checkpo
         .withColumn("_ingest_ts", current_timestamp())
         .withColumn("_source_file", col("_metadata.file_name"))
         .withColumn ("run_id", lit(run_id))
-        # 2️ Extract year/month from filename
+        # 2️. Extract year/month from filename
         .withColumn("year", regexp_extract("_source_file", r"_(\d{4})-", 1).cast("int"))
         .withColumn("month", regexp_extract("_source_file", r"-(\d{2})", 1).cast("int"))
     )
 
-    # 3️ Write to Bronze Delta with partitioning and schema evolution
+    # 3️. Write to Bronze Delta with partitioning and schema evolution
     (
         df.writeStream.format("delta")
         .option("checkpointLocation", checkpoint_path)
@@ -58,7 +58,7 @@ def ingest_bronze(spark, run_id, landing_path, bronze_path, schema_path, checkpo
         .awaitTermination()
     )
 
-    # 4️ Register Delta table in Unity Catalog
+    # 4️. Register Delta table in Unity Catalog
     spark.sql(
         f"""
             CREATE TABLE IF NOT EXISTS {catalog_table}
