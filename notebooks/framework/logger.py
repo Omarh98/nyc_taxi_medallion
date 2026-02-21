@@ -105,7 +105,80 @@ def log_silver_ingestion(spark, run_id, dataset_name, catalog_table, log_table, 
     log_entry.write.format("delta").mode("append").option("mergeSchema","true").saveAsTable(log_table)
     
      
+def log_gold_ingestion(
+    spark, 
+    run_id, 
+    dataset_name, 
+    catalog_table, 
+    log_table, 
+    start_ts, 
+    end_ts, 
+    total_source_rows, 
+    total_gold_rows, 
+    max_source_ts, 
+    success=True, 
+    error_msg=""
+):
+    """
+    Persists operational metadata for the Gold Serving layer.
 
-     
+    This function implements a centralized observability pattern for the top tier 
+    of the Medallion architecture. It captures high-level metrics for the 
+    aggregation and unification process, specifically tracking the compression 
+    ratio from high-volume Silver records to low-latency Gold metrics.
+
+    Args:
+        spark (SparkSession): The active SparkSession.
+        run_id (str): Unique UUID for the current pipeline execution.
+        dataset_name (str): Logical name of the Gold dataset (e.g., 'daily_trip_metrics').
+        catalog_table (str): Target Gold table name in Unity Catalog/Metastore.
+        log_table (str): The centralized Delta table where audit logs are stored.
+        start_ts (datetime): Execution start timestamp.
+        end_ts (datetime): Execution completion timestamp.
+        source_count (int): Aggregated row count across all Silver tables processed in this run.
+        gold_count (int): Final row count emitted to the Gold table after aggregation.
+        max_source_ts (timestamp): The latest ingestion timestamp found across all processed Silver records.
+        success (bool): Indicates if the Gold engine completed without exceptions.
+        error_msg (str): Detailed error description if success is False.
+    """
+    
+    status_msg = "Success" if success else "Failure"
+    duration = (end_ts - start_ts).total_seconds()
+
+    # Reuse a similar schema to your Silver logger for consistency in your Log Analytics
+    log_schema = StructType([
+        StructField("run_id", StringType(), False),
+        StructField("dataset_name", StringType(), False),
+        StructField("catalog_table", StringType(), False),
+        StructField("status", StringType(), False),
+        StructField("start_ts", TimestampType(), False),
+        StructField("end_ts", TimestampType(), False),
+        StructField("duration_sec", DoubleType(), True),
+        StructField("max_source_ts", TimestampType(), True), # The high-water mark used
+        StructField("source_count", IntegerType(), True),    # Sum of rows from all 4 Silvers
+        StructField("gold_count", IntegerType(), True),      # Final rows after aggregation
+        StructField("error_msg", StringType(), True)
+    ])
+
+    data = [(
+        run_id, 
+        dataset_name, 
+        catalog_table, 
+        status_msg, 
+        start_ts, 
+        end_ts, 
+        duration,           
+        max_source_ts,      
+        total_source_rows,  
+        total_gold_rows,    
+        error_msg
+    )]
+
+    log_entry = spark.createDataFrame(data, schema=log_schema)
+
+    # Append to the centralized logging table
+    (log_entry.write.format("delta")
+              .mode("append")
+              .saveAsTable(log_table))     
 
 
