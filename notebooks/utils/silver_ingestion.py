@@ -183,112 +183,256 @@ def run_silver_pipeline(spark, config, run_id, log_fn):
             duplicates_dropped=metrics["duplicates"], error_msg=error_msg, 
             log_table=log_table, catalog_table=config["silver_table"]
         )
+        if not success:
+            raise Exception(error_msg)
 
-
-def apply_scd_type_1(source_df, target_table, business_key, rename_dict, cast_dict):
+def apply_scd(spark, staged_df, target_table, business_key, comparison_cols, scd_type):
     """
-    Performs a Slowly Changing Dimension (SCD) Type 1 Merge on a Delta table.
+    Applies SCD Type 1 or Type 2 changes to a Delta Table.
     
-    This function synchronizes the target table with the source data by updating 
-    existing records and inserting new ones. It does NOT maintain history; 
-    existing values in the target table are overwritten if they differ from the source.
-
     Args:
-        source_df (DataFrame): The raw/Bronze Spark DataFrame containing new data.
-        target_table (str): The name of the Silver table to update (e.g., 'silver.zones').
-        business_key (str): The unique identifier (after renaming) used for matching.
-        rename_dict (dict): A mapping of {"Old_Name": "new_name"} for column alignment.
-        cast_dict (dict): A mapping of {"new_name": "data_type"} to ensure type safety.
-
+        spark: SparkSession
+        source_df: DataFrame containing the source data (with bronze_id)
+        target_table: String name of the target Delta table
+        business_key: String name of the unique identifier column
+        comparison_cols: List of strings for columns to detect changes on
+        scd_type: Integer (1 or 2)
+        silver_run_id: String/Int identifier for the current Silver execution
+    
     Returns:
-        None: Executes the merge directly on the Delta Lake table.
+        dict: {'rows_inserted': int, 'rows_updated': int, 'total_rows_affected': int}
     """
-    
-    # 1. Transform: Rename and cast/select based on the new names
-    clean_df = source_df.withColumnsRenamed(rename_dict).select([
-        F.col(c).cast(cast_dict[c]) for c in rename_dict.values()
-    ])
 
-    # 2. Initialization: Create the table if it doesn't exist
+    # --- 1. PREPARE SOURCE DATA ---
+    # We add the Silver-specific metadata here so it's ready for the merge/insert
+    # Note: bronze_id is assumed to be in source_df already
+
+    
+    # Identify all data columns (excluding the keys and SCD2 tracking cols if they exist in source)
+    # We use the source columns as the "Master List" of what to insert/update
+    # We filter out columns that shouldn't be in the update set (like the business key itself)
+    source_cols = staged_df.columns
+    update_columns = [c for c in source_cols if c != business_key]
+    
+    # --- 2. INITIAL LOAD HANDLER ---
     if not spark.catalog.tableExists(target_table):
-        clean_df.write.format("delta").saveAsTable(target_table)
-        return
-
-    # 3. Atomic Merge: Overwrite matching records and insert new ones
-    target_delta = DeltaTable.forName(spark, target_table)
-    
-    (target_delta.alias("target")
-     .merge(
-         clean_df.alias("source"), 
-         f"target.{business_key} = source.{business_key}"
-     )
-     .whenMatchedUpdateAll()
-     .whenNotMatchedInsertAll()
-     .execute())
-    
-
-def apply_scd_type_2(source_df, target_table, business_key, rename_dict, cast_dict, attr_columns):
-    """
-    Performs a Slowly Changing Dimension (SCD) Type 2 Merge on a Delta table.
-    
-    This function tracks historical changes for specific attributes by 'expiring' 
-    old records and inserting new 'current' versions. It handles renaming, 
-    casting, and versioning logic in a single atomic transaction.
-
-    Args:
-        source_df (DataFrame): The raw/Bronze Spark DataFrame containing new data.
-        target_table (str): The name of the Silver table to update (e.g., 'silver.licenses').
-        business_key (str): The unique identifier (after renaming) used for matching.
-        rename_dict (dict): A mapping of {"Old_Name": "new_name"} for column alignment.
-        cast_dict (dict): A mapping of {"new_name": "data_type"} to ensure type safety.
-        attr_columns (list): Columns where a value change triggers a new historical record.
-
-    Returns:
-        None: Executes the merge directly on the Delta Lake table.
-    """
-    
-    # 1. Transform: Clean and align with the Silver "Contract"
-    clean_df = source_df.withColumnsRenamed(rename_dict).select([
-        F.col(c).cast(cast_dict[c]) for c in rename_dict.values()
-    ])
-
-    # 2. Initialization: Create the table if it doesn't exist
-    if not spark.catalog.tableExists(target_table):
-        (clean_df
-         .withColumn("start_at", F.current_timestamp())
-         .withColumn("end_at", F.lit(None).cast("timestamp"))
-         .withColumn("is_current", F.lit(True))
-         .write.format("delta").saveAsTable(target_table))
-        return
+        print(f"Target {target_table} does not exist. Performing initial load...")
+        initial_df = staged_df
+        
+        if scd_type == 2:
+            initial_df = initial_df.withColumn("start_at", F.current_timestamp()) \
+                                   .withColumn("end_at", F.lit(None).cast("timestamp")) \
+                                   .withColumn("is_current", F.lit(True))
+        
+        initial_df.write.format("delta").saveAsTable(target_table)
+        
+        # Get metrics from the commit we just made
+        dt = DeltaTable.forName(spark, target_table)
+        metrics = dt.history(1).collect()[0]["operationMetrics"]
+        rows_inserted = int(metrics.get("numOutputRows", initial_df.count()))
+        
+        return {
+            "rows_inserted": rows_inserted, 
+            "rows_updated": 0, 
+            "total_rows_affected": rows_inserted
+        }
 
     target_delta = DeltaTable.forName(spark, target_table)
+
+    # --- 3. DEFINE MATCH LOGIC ---
+    # Null-safe comparison (<=>) prevents NULLs from breaking the logic
+    change_condition = " OR ".join([f"target.{c} <=> source.{c} = False" for c in comparison_cols])
     
-    # 3. Change Detection: Check if any tracked attributes have changed
-    change_cond = " OR ".join([f"target.{c} <> source.{c}" for c in attr_columns])
+    # --- 4. EXECUTE MERGE ---
+    if scd_type == 1:
+        # SCD Type 1: Overwrite on change, Ignore on no change
+        (target_delta.alias("target")
+            .merge(
+                staged_df.alias("source"), 
+                f"target.{business_key} = source.{business_key}"
+            )
+            .whenMatchedUpdate(
+                condition = change_condition,
+                set = {c: f"source.{c}" for c in update_columns} 
+                # This includes bronze_id, run_id, ingest_ts because they are in update_columns
+            )
+            .whenNotMatchedInsertAll()
+            .execute()
+        )
 
-    # Find records that exist and have changed values
-    staged_updates = clean_df.join(
-        target_delta.toDF().filter("is_current = true"),
-        business_key
-    ).where(change_cond).select(clean_df["*"], F.lit(True).alias("needs_update"))
+    elif scd_type == 2:
+        # SCD Type 2: History Tracking
+        # Step A: Identify rows that need to be expired (Matched + Changed)
+        # We perform a join to find records where the key matches but data is different
+        rows_to_update = staged_df.alias("source").join(
+            target_delta.toDF().alias("target"),
+            (F.col(f"source.{business_key}") == F.col(f"target.{business_key}")) &
+            (F.col("target.is_current") == True)
+        ).filter(F.expr(change_condition)).select(
+            "source.*", 
+            F.lit(True).alias("needs_update")
+        )
 
-    # Combine original data with the "update" markers
-    upsert_df = clean_df.withColumn("needs_update", F.lit(False)).unionByName(staged_updates)
+        # Step B: Combine "New Rows" (from source) with "Rows to Update" (marked)
+        # We explicitly set needs_update=False for the standard source rows
+        merge_df = staged_df.withColumn("needs_update", F.lit(False)).unionByName(rows_to_update)
 
-    # 4. Atomic Merge: Expire old versions and insert new ones
-    (target_delta.alias("target")
-     .merge(
-         upsert_df.alias("source"), 
-         f"target.{business_key} = source.{business_key} AND target.is_current = true"
-     )
-     .whenMatchedUpdate(
-         condition = "source.needs_update = true",
-         set = {"end_at": F.current_timestamp(), "is_current": "false"}
-     )
-     .whenNotMatchedInsert(values = {
-         **{c: f"source.{c}" for c in rename_dict.values()},
-         "start_at": F.current_timestamp(),
-         "end_at": "null",
-         "is_current": "true"
-     })
-     .execute())
+        (target_delta.alias("target")
+            .merge(
+                merge_df.alias("source"), 
+                f"target.{business_key} = source.{business_key} AND target.is_current = true"
+            )
+            # 1. Update existing current row -> Expire it
+            .whenMatchedUpdate(
+                condition = "source.needs_update = true",
+                set = {
+                    "is_current": "false",
+                    "end_at": F.current_timestamp()
+                    # We DO NOT update bronze_id, run_id, or ingest_ts here.
+                    # They retain their original values from when the record was created.
+                }
+            )
+            # 2. Insert new row (either brand new OR the new version of an updated row)
+            .whenNotMatchedInsert(
+                values = {
+                    **{c: f"source.{c}" for c in source_cols},
+                    "is_current": "true",
+                    "start_at": F.current_timestamp(),
+                    "end_at": "null"
+                }
+            )
+            .execute()
+        )
+
+    # --- 5. EXTRACT METRICS ---
+    history = target_delta.history(1).collect()[0]
+    metrics = history["operationMetrics"]
+    
+    rows_inserted = int(metrics.get("numTargetRowsInserted", 0))
+    rows_updated = int(metrics.get("numTargetRowsUpdated", 0))
+    
+    return {
+        "rows_inserted": rows_inserted,
+        "rows_updated": rows_updated,
+        "total_rows_affected": rows_inserted + rows_updated
+    }
+
+
+def run_dimension_pipeline(spark, config, run_id, log_fn):
+    """
+    Orchestrator for Dimension (SCD) Tables.
+    
+    This function manages the lifecycle of loading a dimension table:
+    1. Ingests from Bronze.
+    2. Normalizes schema (Rename & Cast).
+    3. Executes the SCD Logic (via apply_scd).
+    4. Logs the results (Success/Failure) using the unified logger.
+    
+    Args:
+        spark: SparkSession
+        config (dict): Configuration containing:
+            - dataset_name, log_table
+            - bronze_table, silver_table
+            - business_key
+            - rename_mapping, type_mapping
+            - scd_type
+            - comparison_columns (optional for SCD1, required for SCD2)
+        run_id: Unique identifier for this execution.
+        log_fn: The 'log_silver_ingestion' function.
+    """
+    
+    # --- 1. SETUP ---
+    start_ts = datetime.datetime.now()
+    dataset_name = config["dataset_name"]
+    log_table = config.get("log_table", "default_logs")
+    
+    # Initialize Defaults
+    bronze_count = 0
+    metrics = {"rows_inserted": 0, "rows_updated": 0, "total_rows_affected": 0}
+    success = False
+    error_msg = ""
+    max_bronze_ts = None
+    
+    try:
+        print(f"[{dataset_name}] Starting Dimension Pipeline...")
+        
+        # --- 2. INGESTION ---
+        bronze_df = spark.read.table(config["bronze_table"])
+        bronze_count = bronze_df.count()
+
+        # Capture lineage watermark (if available) for the log
+        # We look for standard timestamp columns usually found in Bronze
+        max_bronze_ts = bronze_df.agg(F.max('_ingest_ts')).collect()[0][0]
+                
+
+        # --- 3. TRANSFORMATION (Rename & Cast) ---
+        
+        # A. Handle Lineage Column
+        # We preemptively rename 'run_id' to 'bronze_id' if it exists to avoid collisions
+        # with the new Silver 'run_id' we will generate later.
+            
+        # B. Apply Configured Renames
+        renamed_df = bronze_df.withColumnsRenamed(config["rename_mapping"])
+        
+        # C. Apply Strict Schema (Casting)
+        # We iterate through 'type_mapping' to select only the allowed columns.
+        # This acts as both a Caster and a Column Filter.
+        select_exprs = []
+        for col_name, data_type in config["type_mapping"].items():
+            select_exprs.append(F.col(col_name).cast(data_type))
+            
+        # Note: If 'bronze_id' is needed in Silver, ensure it is in your type_mapping config!
+        cast_df = renamed_df.select(select_exprs)
+
+        staged_df = cast_df.withColumn("run_id", F.lit(run_id)) \
+                         .withColumn("ingest_ts", F.current_timestamp())
+        # --- 4. EXECUTION (Apply SCD) ---
+        
+        # Determine Comparison Columns
+        # If not provided in config for SCD1, we compare ALL columns (except the PK)
+        comparison_cols = config.get("comparison_columns")
+        if not comparison_cols:
+            comparison_cols = [c for c in config["type_mapping"].keys() if c != config["business_key"]]
+
+        metrics = apply_scd(
+            spark=spark,
+            staged_df=staged_df,
+            target_table=config["silver_table"],
+            business_key=config["business_key"],
+            comparison_cols=comparison_cols,
+            scd_type=config.get("scd_type", 1),
+        )
+        
+        success = True
+        print(f"[{dataset_name}] Success. Total Rows Affected: {metrics['total_rows_affected']}")
+
+    except Exception as e:
+        error_msg = str(e)
+        print(f"[{dataset_name}] FAILED: {error_msg}")
+        # We do not raise here immediately, so that the finally block runs and logs the error.
+        # However, in a real orchestrator (like Airflow), you might want to `raise e` AFTER logging.
+
+    finally:
+        # --- 5. LOGGING ---
+        end_ts = datetime.datetime.now()
+        
+        log_fn(
+            spark=spark,
+            run_id=run_id,
+            dataset_name=dataset_name,
+            catalog_table=config["silver_table"],
+            log_table=log_table,
+            start_ts=start_ts,
+            end_ts=end_ts,
+            max_bronze_ts=max_bronze_ts,
+            bronze_count=bronze_count,
+            silver_count=metrics["total_rows_affected"],
+            quarantine_count=0,      # N/A for dimensions in this pattern
+            duplicates_dropped=0,    # N/A for dimensions in this pattern
+            success=success,
+            error_msg=error_msg
+        )
+        
+        # Re-raise exception if failed, so the job actually fails in Databricks/Spark UI
+        if not success:
+            raise Exception(error_msg)
